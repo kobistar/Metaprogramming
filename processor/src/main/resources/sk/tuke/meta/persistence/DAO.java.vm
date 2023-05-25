@@ -1,0 +1,219 @@
+package ${package};
+
+import sk.tuke.meta.assignment.persistence.DAOPersistenceManager;
+import sk.tuke.meta.assignment.persistence.EntityDAO;
+
+import java.io.*;
+import java.lang.*;
+import java.lang.reflect.*;
+import java.lang.reflect.Array;
+import java.net.*;
+import java.nio.file.*;
+import java.sql.*;
+import java.util.*;
+import java.util.Date;
+import java.util.stream.*;
+import javax.annotation.processing.*;
+import javax.annotation.processing.*;
+import javax.lang.model.*;
+import javax.lang.model.element.*;
+import javax.lang.model.type.*;
+import javax.persistence.*;
+import javax.tools.*;
+
+public class ${entityType}DAO implements EntityDAO<${entityType}> {
+
+    private final DAOPersistenceManager manager;
+    private final Connection connection;
+
+    public ${entityType}DAO(DAOPersistenceManager manager){
+        this.manager = manager;
+        this.connection = manager.getConnection();
+    }
+
+    @Override
+    public void createTable() {
+        try { connection.createStatement().executeUpdate("${createTableString}"); }
+        catch (SQLException e) { throw new RuntimeException(e); }
+    }
+
+    @Override
+    public Optional<$entityType> get(long id) {
+        String getString = "${getString}";
+        try (PreparedStatement stmt = connection.prepareStatement(getString)) {
+            stmt.setLong(1, id);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()){
+                ${entityType} obj = new ${entityType}();
+
+                #foreach($variable in $variables)
+                    obj${variable}
+                #end
+
+                #if(${ManyToOne})
+                    Optional<${ManyToOneClass}> obj2 = manager.get(${ManyToOneClass}.class, rs.getLong("${ForeignKey}"));
+                    obj2.ifPresent(obj::${ManyToOneName});
+                #end
+                return Optional.of(obj);
+            }
+        }
+        catch (SQLException | IllegalArgumentException ex){ ex.printStackTrace(); }
+        return Optional.empty();
+    }
+
+    @Override
+    public List<$entityType> getAll() {
+        String getAllString = "${getAllString}";
+        List<$entityType> objs = new ArrayList<>();
+        try (PreparedStatement stmt = connection.prepareStatement(getAllString)) {
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()){
+                ${entityType} obj = new ${entityType}();
+
+                #foreach($variable in $variables)
+                    obj${variable}
+                #end
+                #if(${ManyToOne})
+                    Optional<${ManyToOneClass}> obj2 = manager.get(${ManyToOneClass}.class, rs.getLong("${ForeignKey}"));
+                    obj2.ifPresent(obj::${ManyToOneName});
+                #end
+
+                objs.add(obj);
+            }
+        }
+        catch (SQLException | IllegalArgumentException ex){ ex.printStackTrace(); }
+        return objs;
+    }
+
+    @Override
+    public List<$entityType> getBy(String fieldName, Object value) {
+        List<$entityType> objs = new ArrayList<>();
+        Field[] fields = ${entityType}.class.getDeclaredFields();
+
+        for(Field field : fields) {
+            if (field.isAnnotationPresent(Column.class) && field.getAnnotation(Column.class).name() != null && field.getName().equals(fieldName))
+                fieldName = field.getAnnotation(Column.class).name();
+        }
+
+        String getByString = "SELECT * FROM `${tableName}` WHERE `" + fieldName + "` = ?";
+
+        try (PreparedStatement stmt = connection.prepareStatement(getByString)) {
+            stmt.setObject(1, value);
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                ${entityType} obj = new ${entityType}();
+                #foreach($variable in $variables)
+                    obj${variable}
+                #end
+
+                #if(${ManyToOne})
+                    Optional<${ManyToOneClass}> obj2 = manager.get(${ManyToOneClass}. class,
+                    rs.getLong("${ForeignKey}"));
+                    obj2.ifPresent(obj::${ManyToOneName});
+                #end
+                objs.add(obj);
+            }
+        } catch (SQLException | IllegalArgumentException ex) {
+            ex.printStackTrace();
+        }
+
+        return objs;
+    }
+
+    @Override
+    public long save(Object entity) {
+        /*${entityType} instant = (${entityType}) entity;
+        System.out.println("instant-> " + instant.getName());*/
+        String idColumnName = null;
+        String idFieldName = null;
+        Field[] fields = ${entityType}.class.getDeclaredFields(); //entity.getClass().getDeclaredFields();
+
+        String[] string = "${updateTableString}".split("\\?");
+        List<String> insertValues = new ArrayList<>();
+        List<String> updateValues = new ArrayList<>();
+
+        Object columnValue;
+        long idColumnValue = 0;
+        int counter = 0;
+
+        for (Field field : fields) {
+            field.setAccessible(true);
+            try {
+                columnValue = field.get(entity);
+
+                if(field.isAnnotationPresent(Column.class) && !field.getAnnotation(Column.class).nullable() && field.get(entity) == null)
+                    throw new RuntimeException("Value cannot be null for column: " + field.getName());
+            }
+            catch (IllegalAccessException e){
+                throw new RuntimeException(e.getMessage(), e);
+            }
+
+            if (field.isAnnotationPresent(Transient.class)) continue;
+            else if (field.isAnnotationPresent(Id.class)) {
+                idFieldName = field.getName();
+                idColumnName = field.getName();
+                if(field.isAnnotationPresent(Column.class))
+                    if (field.getAnnotation(Column.class).name() != null && !(field.getAnnotation(Column.class).name().equals("") || field.getAnnotation(Column.class).name().equals(" "))) idColumnName = field.getAnnotation(Column.class).name();
+
+                idColumnValue = (long) columnValue;
+                continue;
+            }
+            else if (field.isAnnotationPresent(ManyToOne.class)) columnValue = manager.save(columnValue);
+
+            insertValues.add(getColumnValue(columnValue));
+            updateValues.add(string[counter] + getColumnValue(columnValue));
+            counter++;
+        }
+
+        String insertSQL = "${insertTableString}" + String.join(",", insertValues) + ")";
+
+        if(idColumnValue != 0){//keď sa robí UPDATE
+            insertSQL = String.join(",", updateValues).replace(",,",", ") + " WHERE `" + "${idColumnName}" + "` = " + idColumnValue;
+        }
+
+        try (PreparedStatement statement = connection.prepareStatement(insertSQL, Statement.RETURN_GENERATED_KEYS)){
+            statement.executeUpdate();
+            ResultSet generatedKeys = statement.getGeneratedKeys(); //zoberiem najnovsie id a urobim set objektu, ktory mi prisiel na save
+
+            if (generatedKeys.next() && idColumnValue == 0) { // ak sa správne vygeneruje kluc tak funkcia vrati true
+                assert idFieldName != null;
+                Field idField = ${entityType}.class.getDeclaredField(idFieldName);
+
+                long id = generatedKeys.getLong(1);
+                idField.setAccessible(true);
+                idField.set(entity, id);
+
+                return id; // vráti id vloženého záznamu
+            }
+            else return idColumnValue;
+        }
+        catch (SQLException | IllegalAccessException | NoSuchFieldException e) {
+            throw new RuntimeException("Failed to save entity " + entity.getClass().getSimpleName(), e);
+        }
+    }
+
+
+    @Override
+    public void delete(Object entity) {
+        ${entityType} instant = (${entityType}) entity;
+        try {
+            PreparedStatement stmt = connection.prepareStatement("$deleteString");
+            stmt.setObject(1, ((${entityType}) entity).get${idGetVariable}());
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private String getColumnValue(Object value) { // pomocná metóda pre získanie SQL hodnoty pre danú premennú
+        if (value == null) return "NULL";
+        else if (value instanceof String || value instanceof Date || value instanceof java.time.LocalDateTime) return String.format("'%s'", value);
+        else return value.toString();
+    }
+
+    /*private <${entityType}> ${entityType} createObjectFromResultSet(Class<${entityType}> type, ResultSet rs) throws SQLException, NoSuchMethodException{
+        type.getDeclaredConstructor().setAccessible(true);
+        ${entityType} obj = new ${entityType}();
+        String columns = "${variables}";
+    }*/
+}

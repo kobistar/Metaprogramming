@@ -1,0 +1,28 @@
+package ${package};
+
+import sk.tuke.meta.assignment.persistence.DAOPersistenceManager;
+import java.io.*;
+import java.lang.*;
+import java.lang.reflect.*;
+import java.net.*;
+import java.sql.*;
+import java.util.*;
+import java.util.Date;
+import java.util.stream.*;
+import javax.persistence.*;
+
+
+#foreach($entity in $entities)
+import ${entity};
+import ${entity}DAO;
+#end
+
+public class GeneratedPersistenceManager extends DAOPersistenceManager{
+
+    public GeneratedPersistenceManager(Connection connection){
+        super(connection);
+        #foreach($name in $names)
+        putDAO(${name}.class, new ${name}DAO(this));
+        #end
+    }
+}
